@@ -68,24 +68,25 @@ void setup() {
 	sbi( SMCR,SM1 );     // power down mode
 	cbi( SMCR,SM2 );     // power down mode
 	
-	setup_watchdog(7);
+	setup_watchdog(6);
 	
 	pinMode(dualPin, OUTPUT); //this is output for the speaker, then switch back to input
 	pinMode(voltsensePin, INPUT); // analog input
-	//pinMode(chargePin, OUTPUT);// charge signal output
 	//set pins to output to control the shift register
 	pinMode(latchPin, OUTPUT);
 	pinMode(clockPin, OUTPUT);
 	pinMode(dataPin, OUTPUT);
-    //THEN PLAY POWER ON SONG - SHAVE AND HAIRCUT
-	playShaveCut();
-	pinMode(dualPin, INPUT); // switch pin from speaker out to interrupt input from 74hc595
-	delay(200);
+
   
 	//initialize interrupt
 	GIMSK = 0b00100000;    // turns on pin change interrupts
 	PCMSK = 0b0000001;    // turn on interrupts on pin PB0, hard pin 5
 	sei(); // enables interrupt
+	
+	//THEN PLAY POWER ON SONG - SHAVE AND HAIRCUT
+	playShaveCut();
+	pinMode(dualPin, INPUT); // switch pin from speaker out to interrupt input from 74hc595
+	delay(200);
 }//SETUP COMPLETE
 //****************************************************************
 //****************************************************************
@@ -185,15 +186,15 @@ void loop() {//MAIN PROG LOOP
 		delay(500);
 		return;
 	}//END OF LOOP2-- WHAT TO DO AFTER X SECONDS UNINTERRUPTED SLEEP.
-	else{//LETS ACTIVATE Q0-Q1 TO SENSE INPUTS
+	else{//LETS ACTIVATE Q0-Q1 TO SENSE INPUTS. THIS SHOULD HAPPEN APPROX. EVERY SECOND
 		//enable Q0-Q1 of 74HC595 to check inputs
 		digitalWrite(latchPin, LOW);
 		// shift out the bits:
 		shiftOut(dataPin, clockPin, MSBFIRST, 3);// sends 00000011 to the 74HC595.
 		digitalWrite(latchPin, HIGH);
-		delay(666); //delay to give time for sensing
+		delay(666); //delay to give time for sensing// IT IS DURING THIS TIME THAT ANY INPUT WILL SET THE INTERRUPT.
 	}
-  }	//END OF LOOP 1 LEAVING THIS LOOP MEANS THERE WAS INPUT DETECTED.
+  }	//END OF LOOP 1 IF NO INPUT REPEAT THE WHILE LOOP. LEAVING THIS LOOP MEANS THERE WAS INPUT DETECTED.
 		//ok so now it's out of the while loop, which means the charge voltage was reached before the time-out AND THERE MIGHT BE AN INPUT DETECTED.
 		//stop charging.
 	if (inputCode == 1) { //MEANS VIBRATION WAS DETECTED
