@@ -1,418 +1,594 @@
-/*
- * ScarabLock.c
- *
- * Created: 5/29/2015 7:49:50 PM
- *  Author: ML
- */ 
-//INCLUDED HEADERS
-#include <avr/io.h>
-#include <avr/interrupt.h>
+/*Scarab v1.0 for Arduino Nano by ML. 6/25/15
+ * Github URL:
+ * URL of diagrams and schematics
+ * URLs of references:
+ * 
+ */
+#include <CapacitiveSensor.h>
 #include <avr/sleep.h>
+#include <avr/power.h>
 #include <avr/wdt.h>
-#include <stdlib.h>
-// Following lines are essential to enable sleep mode
-#ifndef cbi
-#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
-#endif
-#ifndef sbi
-#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
-#endif
+#include <LiquidCrystal.h>
 
-//#define _BV(BIT)   (1<<BIT)
-volatile boolean f_wdt = 1;
+#define filterSamples   5
+int sensSmoothArray1 [filterSamples];
+// initialize the library with the numbers of the interface pins
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+ //declare pin names
+ /*const int chargePin = 12;
+ const int redPin = 11;
+ const int greenPin = 10;
+ const int bluePin = 9;
+ const int speakerPin = 6;
+ const int capSensePin = 8;
+ */
+ const int chargePin = 14;//A0
+ const int redPin = 15;//A1
+ const int greenPin = 10;
+ const int bluePin = 9;
+ const int speakerPin = 6;
+ const int capSensePin = 8;
+ const int capSourcePin = 7;
+ const int offPin = 16;//A2
+ const int hall1Pin = 18;//A4
+ const int hall2Pin = 17;//A3
+ const int rstPin = 19;
+ 
+ volatile int f_wdt=1;
+ //const unsigned long maxTime = 15000; //the max number in sec*1k to wait BEFORE CHARGING
+ //long reading = 0;
+ //long total2 = 0;
+ //int capStatus = 0;
+ int count = 0;
+ int secondCount = 0;
+ //int chirp = 0;
+ int chirpCount = 0;
+ long reading = 0;
+
+ CapacitiveSensor   cs_7_8 = CapacitiveSensor(7,8);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
+
+/***************************************************
+ *  Name:        ISR(WDT_vect)
+ *
+ *  Returns:     Nothing.
+ *
+ *  Parameters:  None.
+ *
+ *  Description: Watchdog Interrupt Service. This
+ *               is executed when watchdog timed out.
+ *
+ ***************************************************/
+ISR(WDT_vect)
+{
+  if(f_wdt == 0)
+  {
+    f_wdt=1;
+  }
+  else
+  {
+    Serial.println("WDT Overrun!!!");
+  }
+}
+
+
+/***************************************************
+ *  Name:        enterSleep
+ *
+ *  Returns:     Nothing.
+ *
+ *  Parameters:  None.
+ *
+ *  Description: Enters the arduino into sleep mode.
+ *
+ ***************************************************/
+void enterSleep(void)
+{
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);   /* EDIT: could also use SLEEP_MODE_PWR_DOWN for lowest power consumption. */
+  sleep_enable();
+  
+  /* Now enter sleep mode. */
+  sleep_mode();
+  
+  /* The program will continue from here after the WDT timeout*/
+  sleep_disable(); /* First thing to do is disable sleep. */
+  
+  /* Re-enable the peripherals. */
+  power_all_enable();
+}
+
+
+ void setColor(int red, int green, int blue)
+    {
+      #ifdef COMMON_ANODE
+        red = 255 - red;
+        green = 255 - green;
+        blue = 255 - blue;
+      #endif
+      analogWrite(redPin, red);
+      analogWrite(greenPin, green);
+      analogWrite(bluePin, blue);  
+    }
 
 
 
-// SET PIN ASSIGNMENTS. These constants won't change
-//First, the pins connecting to to the 74HC595 shift register:
-const int latchPin = 1;     //Physical pin 6 connected to ST_CP latch pin (pin 12) of 74HC595
-const int clockPin = 2;     //Physical pin 7 connected to SH_CP (pin 11) of 74HC595
-const int dataPin = 4;      //Physical pin 3 connected to DS (pin 14) of 74HC595
-//Then the pins 
-const int voltsensePin = A3;   // physical pin 2 to an analog voltage output
-const int dualPin = 0;     // speaker and Q0-Q1 to hard pin 5 (P0)
+/*int smooth(int data, float filterVal, float smoothedVal){
 
-// variables:
-int sensorValue = 0;      // the sensor value
-int sensorMin = 0;        // minimum sensor value (approx 1.8v)
-int sensorMax = 250;      // maximum sensor value
-unsigned long sysTime = 0;      //this is for keeping time during charge
-unsigned long startTime = 0;
-boolean set2zero = false;
-boolean chargeStatus = false;
-unsigned long fuckCounter = 0;
-unsigned long chargeCounter = 0;
-const unsigned long maxTime = 15000; //the max number in sec*1k to wait for charge
-int watchdog_counter = 0;
-byte chargeMode = 4; //00000100
-//byte powerDown = 128;//10000000
-byte discharge = 16;//00001000
-//byte onVibSensor = 12;//00001100
-byte Check = 1; //00000001
-byte inputCode = 0; //00000000
 
+  if (filterVal > 1){      // check to make sure param's are within range
+    filterVal = .99;
+  }
+  else if (filterVal <= 0){
+    filterVal = 0;
+  }
+
+  smoothedVal = (data * (1 - filterVal)) + (smoothedVal  *  filterVal);
+
+  return (int)smoothedVal;
+}*/
+ 
 
 void setup() {
-	//REGARDING SLEEP MODE
-	// CPU Sleep Modes
-	// SM2 SM1 SM0 Sleep Mode
-	// 0    0  0 Idle
-	// 0    0  1 ADC Noise Reduction
-	// 0    1  0 Power-down
-	// 0    1  1 Power-save
-	// 1    0  0 Reserved
-	// 1    0  1 Reserved
-	// 1    1  0 Standby(1)
-	cbi( SMCR,SE );      // sleep enable, power down mode
-	cbi( SMCR,SM0 );     // power down mode
-	sbi( SMCR,SM1 );     // power down mode
-	cbi( SMCR,SM2 );     // power down mode
-	
-	setup_watchdog(6);
-	
-	pinMode(dualPin, OUTPUT); //this is output for the speaker, then switch back to input
-	pinMode(voltsensePin, INPUT); // analog input
-	//set pins to output to control the shift register
-	pinMode(latchPin, OUTPUT);
-	pinMode(clockPin, OUTPUT);
-	pinMode(dataPin, OUTPUT);
-
+  // put your setup code here, to run once:
+  // set up the LCD's number of columns and rows:
+  digitalWrite(rstPin, HIGH);
+  lcd.begin(16, 2);
+  // Print a message to the LCD.
+  lcd.print("Initializing...");
+  Serial.begin(9600);
+  Serial.println("Initializing...");
+  //CONFIGURE PINS
+  pinMode(chargePin, OUTPUT);
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);
+  pinMode(bluePin, OUTPUT);
+  pinMode(speakerPin, OUTPUT);
+  pinMode(capSensePin, INPUT);
+  pinMode(capSourcePin, OUTPUT);
+  pinMode(offPin, OUTPUT);
+  pinMode(hall1Pin, INPUT);
+  pinMode(hall2Pin, INPUT);
+  //pinMode(rstPin, OUTPUT);
   
-	//initialize interrupt
-	GIMSK = 0b00100000;    // turns on pin change interrupts
-	PCMSK = 0b0000001;    // turn on interrupts on pin PB0, hard pin 5
-	sei(); // enables interrupt
-	
-	//THEN PLAY POWER ON SONG - SHAVE AND HAIRCUT
-	playShaveCut();
-	pinMode(dualPin, INPUT); // switch pin from speaker out to interrupt input from 74hc595
-	delay(200);
-}//SETUP COMPLETE
-//****************************************************************
-//****************************************************************
-//****************************************************************
 
-//MAIN PROGRAM//
-void loop() {//MAIN PROG LOOP
-  // wait 30 seconds of uninterrupted sleep
+  //CONFIGURE CAPSENSE PARAMETERS
+  //cs_7_8.set_CS_AutocaL_Millis(0xFFFFFFFF);     // turn off autocalibrate on channel 1 - just as an example
+  cs_7_8.set_CS_Timeout_Millis(100);
   
-    
-  while (inputCode == 0){ //START LOOP1. As long as there is no input detected from either the reed switch or the vib sensor...
-	//ADCSRA &= ~(1<<ADEN); //Disable ADC, saves ~230uA
-	//setup_watchdog(2); //Setup watchdog to go off after 1/3 sec
-	//sleep_mode(); //Go to sleep! Wake up 1sec later and check system
-	if (chargeStatus == true){
-		//BLINK THE LED TO INDICATED SYSTEM ARMED
-		digitalWrite(latchPin, LOW);
-		shiftOut(dataPin, clockPin, MSBFIRST, 16); //TURN ON THE LED.
-		digitalWrite(latchPin, HIGH);
-		delay(500);
-		digitalWrite(latchPin, LOW);
-		shiftOut(dataPin, clockPin, MSBFIRST, 0); //TURN OFF THE LED.
-		digitalWrite(latchPin, HIGH);
-		delay(500);
-	}
-	if(watchdog_counter > 30) {//START LOOP2. after 30 seconds of uninterrupted sleep, TIME TO CHARGE THE CAPACITOR
-		watchdog_counter = 0; //reset timer
-		//start charging!
-		//Do this while the shock module is charging:
-		//send charge signal to 74hc595, Q4
-		//ADCSRA |= (1<<ADEN); //Enable ADC to read voltage
-		digitalWrite(latchPin, LOW);
-		// shift out the bits:
-		shiftOut(dataPin, clockPin, MSBFIRST, chargeMode); //charge signal out, and so...
-		while ((analogRead(voltsensePin)) <= sensorMax)  { //START LOOP3. as long as voltage is less than max:
-			
-			playCharging(); //PLAY THE CHARGING NOTE
-			
-			digitalWrite(latchPin, HIGH);//take the latch pin high and keep it that way so the charge signal remains HIGH:
-			fuckCounter = getCount(); //GET VALUE OF CHARGECOUNTER, LOAD TO FUCKCOUNTER
-			if (fuckCounter >= maxTime) {  //START LOOP4...if max seconds have passed (TIMEOUT ERROR):
-				set2zero = false; //reset the set to zero timer flag
-				//DO SOMETHING HERE. TIME IS UP. TIME TO DETERMINE WHAT HAPPENED.
-				//DID IT CHARGE?
-				if ((analogRead(voltsensePin)) <= sensorMax)  { // START LOOP5. IF IT DID NOT CHARGE TO THE MAX VOLTAGE...
-					//the set charge was not reached.
-					//stop charging:
-					shiftOut(dataPin, clockPin, MSBFIRST, 0); //charge signal out, and so...
-					playChargeError();
-					delay (500);
-					playChargeError();
-					delay(500);
-					playChargeError();
-					delay (500);
-					
-					//discharge the remaining voltage
-					digitalWrite(latchPin, LOW); //
-					// shift out the bits:
-					shiftOut(dataPin, clockPin, MSBFIRST, discharge); //sends a 1 to Q5 - discharge signal
-					while ((analogRead(voltsensePin)) > 0)  { //START LOOP6. DISCHARGE as long as voltage is more than zero:
-						//take the latch pin high TO DISCHARGE THE CIRCUIT.
-						digitalWrite(latchPin, HIGH); //send it
-						chargeStatus = false;
-					} //END LOOP6
-					delay(500);
-					//POWER DOWN
-					powerDown();
-					//the whole thing shuts down here.
-					//break;
-				}//END LOOP5.
-				else{// START LOOP7. CHARGE SUCCESS!
-					playChargeSuccess();
-					delay(250);
-					chargeStatus = true;
-					break; //leave LOOP4.
-				}//END LOOP7
-					break; ///leave the LOOP3
-			}//END LOOP4. CHARGE TIMEOUT HANDLING
-		
-		}//END LOOP3. as long as voltage is less than max
-		//OK SO NOW THE CAPACITOR IS CHARGED.
-		//PLAY CHARGE SUCCESS NOTE.
-		chargeStatus = true;
-		cli();//disable interrupts
-		pinMode(dualPin,OUTPUT); //set the dualPin to output
-		playChargeSuccess();
-		delay(100);
-		sei(); //enable interrupts
-		//BLINK THE LED TO INDICATED SYSTEM ARMED
-		digitalWrite(latchPin, LOW);
-		shiftOut(dataPin, clockPin, MSBFIRST, 16); //TURN ON THE LED.
-		digitalWrite(latchPin, HIGH);
-		delay(500);
-		digitalWrite(latchPin, LOW);
-		shiftOut(dataPin, clockPin, MSBFIRST, 0); //TURN OFF THE LED.
-		digitalWrite(latchPin, HIGH);
-		delay(500);
-		return;
-	}//END OF LOOP2-- WHAT TO DO AFTER X SECONDS UNINTERRUPTED SLEEP.
-	else{//LETS ACTIVATE Q0-Q1 TO SENSE INPUTS. THIS SHOULD HAPPEN APPROX. EVERY SECOND
-		//enable Q0-Q1 of 74HC595 to check inputs
-		digitalWrite(latchPin, LOW);
-		// shift out the bits:
-		shiftOut(dataPin, clockPin, MSBFIRST, 3);// sends 00000011 to the 74HC595.
-		digitalWrite(latchPin, HIGH);
-		delay(666); //delay to give time for sensing// IT IS DURING THIS TIME THAT ANY INPUT WILL SET THE INTERRUPT.
-	}
-  }	//END OF LOOP 1 IF NO INPUT REPEAT THE WHILE LOOP. LEAVING THIS LOOP MEANS THERE WAS INPUT DETECTED.
-		//ok so now it's out of the while loop, which means the charge voltage was reached before the time-out AND THERE MIGHT BE AN INPUT DETECTED.
-		//stop charging.
-	if (inputCode == 1) { //MEANS VIBRATION WAS DETECTED
-		//RESET TIMER
-		watchdog_counter = 0;
-		//SOUND ALARM
-		playAlarm();
-		delay(250);  
 
-	}//END OF VIBRATION DETECTED LOOP
-	if (inputCode == 2) { //MEANS REED SWITCH WAS DETECTED
-		//RESET TIMER
-		watchdog_counter = 0;
-		//DOWN DOWN SONG
-		playPowerDown();
-		delay(250); 
-		//POWER DOWN
-		powerDown();
-		//the whole thing shuts down here.
-
-	}//END OF REED SWITCH DETECTED LOOP
-}// END OF MAIN PROGRAM LOOP
-
-
-
-//***********************************************************
-//***********************************************************
-//FUNCTIONS//
-//***********************************************************
-//***********************************************************
-
-//***********************************************************
-// SEND OFF SIGNAL TO POLOLU THROUGH SHIFT REGISTER
-void powerDown()	{ 
-	//CONSIDER ADDING EEPROM VARIABLE FOR POWER OFF FLAG
-	digitalWrite(latchPin, LOW); // LATCH OFF
-	shiftOut(dataPin, clockPin, MSBFIRST, 128); //sends a 1 to Q7 (pololu off)
-	digitalWrite(latchPin, HIGH);//take the latch pin high TO SEND THE NEW SIGNAL
-}
-
-//***********************************************************
-//USED FOR COUNTING AFTER POWER ON TO TIME-OUT THE CHARGE SIGNAL
-unsigned long getCount(){ //USED FOR COUNTING AFTER POWER ON TO TIME-OUT THE CHARGE SIGNAL
-  
-  if (set2zero == true){ //DEFAULT FALSE SO IT WILL VISIT HERE THE SECOND AND SUBSEQUENT TIMES
-    sysTime = millis() % maxTime; // SYSTIME IS DEFAULT 0. GET THE MODULUS OF MILLIS/MAXTIME AND LOAD VALUE TO SYSTIME.
-    chargeCounter = sysTime - startTime; //sysTime - starttime (default 0), load result to counter
-    return chargeCounter; //RETURN VALUE
-  }
-  if (set2zero == false){ //FIRST RUN. DEFAULT IS 0.
-    startTime = (millis() % maxTime); //LOAD VARIABLE STARTTIME WITH THE MODULUS OF MILLIS/MAXTIME.
-    chargeCounter = 0;// SET COUNTER TO ZERO
-    set2zero = true; // SET TO TRU SO NEXT RUNS ARE EXECUTED IN THE PREVIOUS LOOP
-    return chargeCounter; // RETURN VALUE
-  }
-}
-
-//***********************************************************
-//GENERATE TONE (PARAMETERS (NOTE, OCTAVE, DURATION)
-void TinyTone(unsigned char divisor, unsigned char octave, unsigned long duration)
-{
-	TCCR1 = 0x90 | (8-octave); // for 1MHz clock
-	// TCCR1 = 0x90 | (11-octave); // for 8MHz clock
-	OCR1C = divisor-1;         // set the OCR
-	delay(duration);
-	TCCR1 = 0x90;              // stop the counter
-}
-
-//***********************************************************
-// Play Shave and a Haircut
-void playShaveCut(void)
-{
-	TinyTone(Note_C, 5, 400);
-	delay(125);
-	TinyTone(Note_G, 4, 400);
-	delay(25);
-	TinyTone(Note_G, 4, 250);
-	delay(25);
-	TinyTone(Note_A, 4, 400);
-	delay(50);
-	TinyTone(Note_G, 4, 300);
-	delay(250);
-	TinyTone(Note_B, 4, 400);
-	delay(25);
-	TinyTone(Note_C, 5, 500);
-}
-
-//***********************************************************
-// Play POWER DOWN SOUND
-void playPowerDown(void)
-{
-	for (int yopp = 0, yopp <4, yopp++){
-		TinyTone(Note_C, 5, 250);
-		delay(250);
-		TinyTone(Note_G, 4, 250);
-		delay(250);
-		TinyTone(Note_A, 4, 250);
-		delay(250);
-		TinyTone(Note_B, 4, 250);
-		delay(250);
-	}
-	TinyTone(Note_C, 5, 500);
-		delay(250);
-}
-
-//***********************************************************
-// Play CHARGING SOUND
-void playCharging(void)
-{
-	TinyTone(Note_E, 6, 200);
-	delay(25);
-	TinyTone(Note_C, 5, 200);
-	delay(25);
-}
-
-//***********************************************************
-// Play CHARGE ERROR SOUND
-void playChargeError(void)
-{
-	TinyTone(Note_F, 5, 400);
-	delay(250);
-	TinyTone(Note_F, 4, 400);
-	delay(25);
-}
-
-//***********************************************************
-// Play CHARGE SUCCESFUL SOUND
-void playChargeSuccess(void)
-{
-	for (int zip = 0, zip <6, zip++){
-	TinyTone(Note_C, 5, 100);
-	delay(10);
-	TinyTone(Note_E, 5, 100);
-	delay(10);
-	TinyTone(Note_E, 5, 100);
-	delay(10);
-	}
-}
-
-//***********************************************************
-// Play ALARM SOUND
-void playAlarm(void)
-{
-	for int (zop = 0, zop >6, zop++){
-		for (int zip = 4, zip <14, zip++){
-			TinyTone(Note_G, zip, 100);
-			delay(10);
-		}
-		delay(200);
-	}
-}
-
-//***********************************************************
-// SET SYSTEM INTO THE SLEEP STATE
-// SYSTEM WAKES UP WHEN WATCHDOG IS TIMED OUT
-void system_sleep() {
-
-	cbi(ADCSRA,ADEN);                    // switch Analog to Digital converter OFF
-
-	set_sleep_mode(SLEEP_MODE_PWR_DOWN); // sleep mode is set here
-	sleep_enable();
-
-	sleep_mode();                        // System sleeps here
-
-	sleep_disable();                     // System continues execution here when watchdog timed out
-	sbi(ADCSRA,ADEN);                    // switch Analog to Digital converter ON
-
-}
-
-//****************************************************************
-// SETUP WATCHDOG TIMER (0-9)
-// 0=16ms, 1=32ms,2=64ms,3=128ms,4=250ms,5=500ms
-// 6=1 sec,7=2 sec, 8=4 sec, 9= 8sec
-void setup_watchdog(int ii) {
-  byte bb;
-  int ww;
-  if (ii > 9 ) ii=9; //ENSURES NO VALUE GREATER THAN 9
-  bb=ii & 7;
-  if (ii > 7) bb|= (1<<5);
-  bb|= (1<<WDCE);
-  ww=bb;
-  //Serial.println(ww);
-
+  /*** SETUP THE WDT ***/
+  /* Clear the reset flag. */
   MCUSR &= ~(1<<WDRF);
-  // start timed sequence
+  
+  /* In order to change WDE or the prescaler, we need to
+   * set WDCE (This will allow updates for 4 clock cycles).
+   */
   WDTCSR |= (1<<WDCE) | (1<<WDE);
-  // set new watchdog timeout value
-  WDTCSR = bb;
+
+  /* set new watchdog timeout prescaler value */
+  WDTCSR = 1<<WDP1 | 1<<WDP2; /* 1.0 seconds */
+  
+  /* Enable the WD interrupt (note no reset). */
   WDTCSR |= _BV(WDIE);
+
+  //INDICATE INITIALIZATION SUCCESS
+  lcd.setCursor(0, 0);
+  lcd.print("SCARAB v1.0");
+  lcd.setCursor(0, 1);
+  lcd.print("by Manuel Labor");
+  Serial.println("SCARAB v1.0: INITIALIZED");
+  Serial.println("by Manuel Labor");
+  for(int i = 0; i < 2; i++){
+    setColor(255, 0, 0);  // red
+    tone(speakerPin, 3136, 125);
+    delay(125);
+    setColor(0, 255, 0);  // green
+    tone(speakerPin, 3951, 125);
+    delay(125);
+    setColor(0, 0, 255);  // blue
+    tone(speakerPin, 4186, 125);
+    delay(125);
+    
+    
+  }
+  delay(500);
+  lcd.clear();
+  //lcd.setCursor(0, 0);
+  lcd.print("INITIALIZED");  
+  delay(750);
+  setColor(0,0,0);
+  lcd.clear();
+  
 }
 
-//***********************************************************
-//INTERRUPT SERVICE ROUTINE
-ISR(PCINT0_vect)  
-{
-	    for(j=0; j<50; j++)
-	    delayMicroseconds(500);  //delay FOR 25000 uS to debounce
-		
-		Check=1; // starts check byte at 00000001
-		for(j=0; j<2; j++){//going to check the first two pins of the 74hc595
-			digitalWrite(latchPin, 0);
-			shiftOut(dataPin, clockPin, MSBFIRST, Check);
-			//shiftOut(dataPin, clockPin, MSBFIRST, 0);
-			digitalWrite(latchPin, 1);
-			delayMicroseconds(500);
-			if(digitalRead(dualPin)==HIGH)
-			bitWrite(inputCode, j, 1);
-			//bitWrite(Output, j, 1);
-			else
-			bitWrite(inputCode, j, 0);
-			Check = Check<<1; // shift the check bit from 0000001 to 00000010
-			}
-	//now we have the byte inputCode with value either 0000001=vibration detected,
-	//or 00000010=reed switch detected.
+void loop() {
+  // put your main code here, to run repeatedly:
+  
+  
+    //
+if(f_wdt == 1){ //if awake:
+  
+  /* Don't forget to clear the flag. */
+  f_wdt = 0;
+  //long reading = 0;
+  int capStatus = 0;
+  //long start = millis();
+  reading =  cs_7_8.capacitiveSensor(30);
+  //float smoothedVal =  smooth(reading, .25, smoothedVal);   // second parameter determines smoothness  - 0 is off,  .9999 is max smooth 
+  int smoothedVal = digitalSmooth(reading, sensSmoothArray1);  // every sensor you use with digitalSmooth needs its own array
+
+  Serial.print(reading);
+  Serial.print("\tSmooth: ");
+  Serial.println(smoothedVal);
+  /*if(reading == -2){
+    reading = 0;
+  }*/
+
+  if((reading == -2) || (reading >444)){//touch detected, sound alarm, taze cycle
+    capStatus = 1;  
+    //reading = 0;
+  }
+  else if(reading >= 244){//disturbance detected, charge, sound alarm
+    capStatus = 2;  
+    //reading = 0;
+  }
+  else if((reading > 30) && (smoothedVal < 100)){//imminent touch detected, charge, sound warning
+    capStatus = 3;  
+    //reading = 0;
+  }
+  else if((reading > 12) && (smoothedVal < 31)){//proximity detected, charge, chirp, blink temp
+    capStatus = 4;  
+    //reading = 0;
+  }
+  else if (reading < 11){//no proximity detected
+    capStatus = 5;
+    //reading = 0;
+  }
+  //else { //possible error. restart.
+  //  capStatus = 6;
+    //reading = 0;
+  //}
+
+  
+  switch (capStatus){
+
+    case 0:
+    break;
+    case 1:{
+      ////touch detected, sound alarm, taze cycle
+      
+      //charge
+      digitalWrite(chargePin, HIGH);
+      //diagnosis
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("TOUCH DETECTED");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print(" S: ");
+      lcd.print(smoothedVal);
+      //sound alarm
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2637, 125);//e
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 2794, 125);//f
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 5274, 125);//e2
+      delay(125);
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      digitalWrite(chargePin, LOW);
+      
+      reading = 0;
+      break;
+        //
+       
+    }
+    case 2:
+    {
+      //manipulation detected, charge, sound alarm
+      //charge
+      digitalWrite(chargePin, HIGH);
+      //diagnosis
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("DISTURBANCE DETECTED");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print(" S: ");
+      lcd.print(smoothedVal);
+      //sound alarm
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2637, 125);//e
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 2794, 125);//f
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 5274, 125);//e2
+      delay(125);
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      digitalWrite(chargePin, LOW);
+      lcd.clear();
+      //reading = 0;
+      break;      
+    }
+    case 3:
+    {
+      //imminent touch detected, charge, sound warning
+      //charge
+      digitalWrite(chargePin, HIGH);
+      lcd.clear();
+      //diagnosis
+      lcd.setCursor(0,0);
+      lcd.print("TOUCH IMMINENT");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print(" S: ");
+      lcd.print(smoothedVal);
+      //sound alarm
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 1109, 100);//C#
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      //delay(100);
+      digitalWrite(chargePin, LOW);
+      
+      //reading = 0;
+      break;
+    }
+    case 4:
+    {
+      //proximity detected, charge, chirp, blink temp
+      //charge
+      digitalWrite(chargePin, HIGH);
+      lcd.clear();
+      //diagnosis
+      lcd.setCursor(0,0);
+      lcd.print("PROXIMITY DETECTED");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print(" S: ");
+      lcd.print(smoothedVal);
+      //sound chirp
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 3520, 60);//A2
+      delay(40);
+      setColor(100, 0, 255);  // orange
+      tone(speakerPin, 1760, 60);//A2
+      delay(200);
+      setColor(0, 0, 0);  //
+      delay(100);
+      setColor(255, 0, 0);
+      delay(500);
+      setColor(0, 0, 0);  //
+      delay(100);
+      setColor(255, 0, 0);
+      delay(500);
+      setColor(0, 0, 0);
+      digitalWrite(chargePin, LOW);
+      
+      //chirp = 1;
+      //reading = 0;
+      break;
+    }
+    case 5:
+    {
+      //no proximity detected
+      //count++
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("SYSTEM ACTIVE");
+      lcd.setCursor(0,1);
+      //lcd.print("scan: ");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print(" S: ");
+      lcd.print(smoothedVal);
+      if(count > 10)
+      {
+                
+        setColor(0, 255, 0);
+        delay(400);
+        setColor(0, 0, 0);
+        count = 0;
+        
+      }
+      else
+      {
+        count ++;
+      }
+      
+      //lcd.clear();
+      //reading = 0;
+      break;
+    }
+    /*case 6:
+    {
+      //possible error. restart.
+      lcd.setCursor(0,0);
+      lcd.print("ERROR: OUTSIDE PARAMETERS");
+      lcd.setCursor(0,1);
+      lcd.print(reading);
+      lcd.print("  S: ");
+      lcd.print(smoothedVal);
+      //sound chirp
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 1380, 60);//A2
+      delay(40);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 1380, 60);//A2 
+      delay(60);
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 1380, 120);//A2 
+      delay(500);
+      //reading = 0;
+      digitalWrite(rstPin, LOW);
+      delay(5); 
+      break;
+      
+    }*/
+    default:
+    {
+      //possible error. restart.
+      lcd.setCursor(0,0);
+      lcd.print("ERROR: UNKNOWN");
+      lcd.setCursor(0,1);
+      lcd.print("restarting...");
+      //sound chirp
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 1380, 60);//A2
+      delay(40);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 1380, 60);//A2 
+      delay(60);
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 1380, 120);//A2 
+      delay(500);
+      //reading = 0;
+      digitalWrite(rstPin, LOW); 
+      //digitalWrite(rstPin, HIGH); 
+      delay(5); 
+      break;
+    }
+     //reading=0; 
+  }
+  capStatus = 0;
+//while the vessel detects proximity, go to sleep and check every .xxx seconds
+    //while((cs_7_8.capacitiveSensor(30) > 600) || (cs_7_8.capacitiveSensor(30) < 0)){
+    //while((reading > 300) || (reading < 0)){
+    /* Don't forget to clear the flag. */
+    //f_wdt = 0;//NECESSARY?
+     
+    
+    /*total2 = cs_7_8.capacitiveSensor(30);
+    if(total2 == -2){//TOUCH??
+    total2 = 1;
+    lcd.setCursor(0,1);
+    lcd.print("TOUCH?");
+    }
+    lcd.setCursor(0,0);
+    lcd.print(total2);
+    Serial.print("PROXIMITY DETECTED: ");
+    Serial.print(total2);
+    Serial.print("   \t");
+    Serial.print("AVERAGE: ");
+    Serial.println((total2 + cs_7_8.capacitiveSensor(30)) / 2);
+
+    setColor(0, 0, 255); //blue
+    delay(50);
+    setColor(0, 0, 0);
+    lcd.clear();
+    /* Don't forget to clear the flag. */
+    //f_wdt = 0;
+    /* Re-enter sleep mode. */
+    //enterSleep();
+    
+   //} //END OF WHILE LOOP*/
+   //BELOW IS WHAT TO DO WHEN PROX NOT DETECTED
+    //total2 =  cs_7_8.capacitiveSensor(30);
+    //lcd.clear();
+    //lcd.print(cs_7_8.capacitiveSensor(30));
+    //lcd.setCursor(0,1);
+    //lcd.print(millis() - start);
+    //Serial.print(millis() - start);        // check on performance in milliseconds
+    //Serial.print("\tRAW: ");
+    //Serial.print(reading);
+    //Serial.print("   \tAVG: ");                    // tab character for debug window spacing
+    //Serial.println( (reading / total2) / 2 );                  // print sensor output 1
+    //delay(10);
+    /* Don't forget to clear the flag. */
+    f_wdt = 0;
+  //here the vessel is NOT being held, start counting, then arm system.
+  //flash red
+    //setColor(255, 0, 0);
+    //delay(50);
+    //setColor(0, 0, 0);
+    //NEED TO START COUNTING SOMEWHERE HERE
+    /* Re-enter sleep mode. */
+    enterSleep();    
+    
+  }// END OF "IF AWAKE" LOOP
+  
+  else //IF NOT AWAKE --DO NOT USE
+  {
+    /* Do nothing. */
+  }
+
+  
+
+
 }
 
-//****************************************************************
-// WATCHDOG INTERRUPT SERVICE / IS EXECUTED WHEN  WATCHDOG TIMED OUT
-ISR(WDT_vect) {
-	watchdog_counter++;
+int digitalSmooth(int rawIn, int *sensSmoothArray){     // "int *sensSmoothArray" passes an array to the function - the asterisk indicates the array name is a pointer
+  int j, k, temp, top, bottom;
+  long total;
+  static int i;
+ // static int raw[filterSamples];
+  static int sorted[filterSamples];
+  boolean done;
+
+  i = (i + 1) % filterSamples;    // increment counter and roll over if necc. -  % (modulo operator) rolls over variable
+  sensSmoothArray[i] = rawIn;                 // input new data into the oldest slot
+
+  // Serial.print("raw = ");
+
+  for (j=0; j<filterSamples; j++){     // transfer data array into anther array for sorting and averaging
+    sorted[j] = sensSmoothArray[j];
+  }
+
+  done = 0;                // flag to know when we're done sorting              
+  while(done != 1){        // simple swap sort, sorts numbers from lowest to highest
+    done = 1;
+    for (j = 0; j < (filterSamples - 1); j++){
+      if (sorted[j] > sorted[j + 1]){     // numbers are out of order - swap
+        temp = sorted[j + 1];
+        sorted [j+1] =  sorted[j] ;
+        sorted [j] = temp;
+        done = 0;
+      }
+    }
+  }
+
+/*
+  for (j = 0; j < (filterSamples); j++){    // print the array to debug
+    Serial.print(sorted[j]); 
+    Serial.print("   "); 
+  }
+  Serial.println();
+*/
+
+  // throw out top and bottom 15% of samples - limit to throw out at least one from top and bottom
+  bottom = max(((filterSamples * 15)  / 100), 1); 
+  top = min((((filterSamples * 85) / 100) + 1  ), (filterSamples - 1));   // the + 1 is to make up for asymmetry caused by integer rounding
+  k = 0;
+  total = 0;
+  for ( j = bottom; j< top; j++){
+    total += sorted[j];  // total remaining indices
+    k++; 
+    // Serial.print(sorted[j]); 
+    // Serial.print("   "); 
+  }
+
+//  Serial.println();
+//  Serial.print("average = ");
+//  Serial.println(total/k);
+  return total / k;    // divide by number of samples
 }
