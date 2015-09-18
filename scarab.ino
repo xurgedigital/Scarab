@@ -10,7 +10,7 @@
 #include <avr/wdt.h>
 #include <LiquidCrystal.h>
 
-#define filterSamples   9 //taking 19 samples (odd numbers only)
+#define filterSamples   15 //taking 19 samples (odd numbers only)
 int sensSmoothArray1 [filterSamples];
 // initialize the library with the numbers of the interface pins
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
@@ -33,7 +33,7 @@ LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
  const int offPin = 16;//A2
  const int hall1Pin = 18;//A4
  const int hall2Pin = 17;//A3
- const int rstPin = 19;
+ const int rstPin = 16;
  
  volatile int f_wdt=1;
  //const unsigned long maxTime = 15000; //the max number in sec*1k to wait BEFORE CHARGING
@@ -48,14 +48,15 @@ LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
  int chirpCount = 0;
  long reading1 = 0;
  long reading2 = 0;
- long readingComb = 0;
+ //long readingComb = 0;
  int smoothedVal = 0;
- int touchThreshold = 400;
- int proximityDet = 220;
+ int touchThreshold = 7350;
+ int proximityDet = 120;
  bool charged = false;
+ bool flippy = true;
  
  CapacitiveSensor   cs_7_8 = CapacitiveSensor(7,8);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
- CapacitiveSensor   cs_7_18 = CapacitiveSensor(7,18);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
+ //CapacitiveSensor   cs_7_18 = CapacitiveSensor(7,18);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
 
 /***************************************************
  *  Name:        ISR(WDT_vect)
@@ -126,11 +127,11 @@ void enterSleep(void)
       lcd.print("A:");
       lcd.print(reading1);
       lcd.setCursor(8,0);
-      lcd.print("Av");
-      lcd.print(readingComb);
+      //lcd.print("Dl");
+      //lcd.print(readingComb);
       lcd.setCursor(0,1);
-      lcd.print("B:");
-      lcd.print(reading2);
+      //lcd.print("B:");
+      //lcd.print(reading2);
       lcd.setCursor(8,1);
       lcd.print("Sm");
       lcd.print(smoothedVal);
@@ -154,7 +155,7 @@ void enterSleep(void)
 void setup() {
   // put your setup code here, to run once:
   // set up the LCD's number of columns and rows:
-  digitalWrite(rstPin, HIGH);
+  digitalWrite(rstPin, LOW);
   lcd.begin(16, 2);
   // Print a message to the LCD.
   lcd.print("Initializing...");
@@ -183,10 +184,9 @@ void setup() {
   with the set_CS_AutocaL_Millis() method. */
   
   //cs_7_8.set_CS_AutocaL_Millis(0xFFFFFFFF);     // turn off autocalibrate on channel 1 - just as an example
-  //cs_7_8.set_CS_Timeout_Millis(40);
-  //cs_7_18.set_CS_Timeout_Millis(40);
+  
   cs_7_8.set_CS_AutocaL_Millis(80); 
-  cs_7_18.set_CS_AutocaL_Millis(80);
+  //cs_7_18.set_CS_AutocaL_Millis(80);
   
 
   /*** SETUP THE WDT ***/
@@ -246,10 +246,10 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
   //int capStatus = 0;
   //long start = millis(); //used to display diag info
   reading1 =  cs_7_8.capacitiveSensor(20); //get the reading from sensor 1
-  reading2 =  cs_7_18.capacitiveSensor(20); //get the reading from sensor 2
-  readingComb = ((reading1 + reading2) / 2); //get the average of both readings
+  //reading2 =  cs_7_18.capacitiveSensor(20); //get the reading from sensor 2
+  //readingComb = ((reading1 + reading2) / 2); //get the average of both readings
   //float smoothedVal =  smooth(reading, .25, smoothedVal);   // second parameter determines smoothness  - 0 is off,  .9999 is max smooth 
-  smoothedVal = digitalSmooth(readingComb, sensSmoothArray1);  // Run average through the smoothing algorithm. every sensor you use with digitalSmooth needs its own array.
+  smoothedVal = digitalSmooth(reading1, sensSmoothArray1);  // Run average through the smoothing algorithm. every sensor you use with digitalSmooth needs its own array.
 
   /* for diagnostics
   Serial.print(reading1);
@@ -261,9 +261,9 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
   
 //THE FOLLOWING IS TO SECTION OUT THE READINGS.
 
-  if(readingComb > touchThreshold){//contact or contact imminent.
+  if(reading1 > touchThreshold){//contact or contact imminent.
     if (timer > 0){ //if within XX seconds of powerup AS DETERMINED BY INITIALIZATION OF VARIABLE (AT FIRST, THEN SEE BELOW)
-    timer = 30; //reset the timer
+    timer = 20; //reset the timer
     capStatus = 1; //signal: holding the vessel and the standby timer is running
     //break; //leave this if loop
     }
@@ -271,29 +271,35 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
     capStatus = 2;  //unauthorized touch. signal alarm and taze cycle
     }
   }
-  else if((readingComb >=proximityDet) && (readingComb <=touchThreshold)){//disturbance detected, charge, sound alarm
+  else if(smoothedVal > 100){//disturbance detected, charge, sound alarm
     if (timer > 0){ //if within 30 seconds of powerup
-      timer = 30; //reset the timer
-     capStatus = 1; //signal all is normal
+      timer = 20; //reset the timer
+     capStatus = 1; //signal: holding the vessel and the standby timer is running
      //break; //leave this if loop
     }
     else{
-    capStatus = 3;  //signal warning and charge
+    capStatus = 3;  //signal proximity detected
     }
   }
+
+  else if (timer <= 0)
+  {
+    capStatus = 4;
+  }
+
     //reading = 0;
   
-  else if((readingComb - smoothedVal) <0){ //capacitance decreasing. walking away.
+  /*else if((readingComb - smoothedVal) <0){ //capacitance decreasing. walking away.
     if (timer > 0){ //if within 30 seconds of powerup
       //timer--; //count down the timer
-      capStatus = 1; //signal all is normal
+      capStatus = 1; //signal: holding the vessel and the standby timer is running
       //break; //leave this if loop
     }
     else{
       capStatus = 4;
     }  
     //reading = 0;
-  }
+  }*/
   
    
 
@@ -312,37 +318,41 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
     case 1:{
       //holding the vessel and the standby timer is running. flash green every 10 seconds
     //count++;
+    displayValues();
     if(count > 10)
       {
-                
         setColor(0, 255, 0);
         delay(400);
         setColor(0, 0, 0);
         count = 0;
-        
       }
       else
       {
         count ++;
       }
-           
-      
-      
-      //digitalWrite(chargePin, LOW);
       
       break;
-        //
-       
+             
     }
     case 2: //unauthorized touch. signal alarm and taze cycle
     {
+      //displayValues();
+      //reading1 =  0;
+      //reading2 =  0;
+      //readingComb = 0;
+      //smoothedVal = 0;
+      //cs_7_8.reset_CS_AutoCal();
+      //cs_7_18.reset_CS_AutoCal();
+      
       //charge
       digitalWrite(chargePin, HIGH);
       
       //sound alarm
-    for(int i = 0; i < 4; i++)
+    for(int i = 0; i < 3; i++)
     {
-      setColor(255, 0, 0);  // red
+      
+
+      
       tone(speakerPin, 2637, 125);//e
       delay(125);
       setColor(0, 255, 0);  // green
@@ -358,52 +368,82 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
       tone(speakerPin, 4186, 125);//c2
       delay(125);
       digitalWrite(chargePin, LOW);
-      lcd.clear();
+      //lcd.clear();
     }
       digitalWrite(chargePin, LOW);
       //reading1 = 0;
       //reading2 = 0;
+      charged = false;
       break;      
     }
-    case 3: //proximity detected. signal warning and charge
+    case 3: //proximity detected. signal warning
     {
-      
+     displayValues(); 
     //charge
-      digitalWrite(chargePin, HIGH);
-      
-      //sound chirp
+      //digitalWrite(chargePin, HIGH);
+      if (flippy == true)
+      {
+       //sound chirp
       setColor(255, 0, 0);  // red
-      tone(speakerPin, 3520, 60);//A2
-      delay(40);
-      setColor(100, 0, 255);  // orange
-      tone(speakerPin, 1760, 60);//A2
+      tone(speakerPin, 3520, 70);//A2
       delay(200);
+      setColor(100, 255, 0);  // orange
+      tone(speakerPin, 1760, 70);//A2
+      delay(200);
+      flippy = false; 
+      }
+      else
+      {
+        flippy = true;
+      }
       
-    /*
-    //sound warning
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 2217, 100);//C#2
-      delay(80);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 2217, 100);//C#2
-      delay(80);
-      setColor(0, 0, 255);  // blue
-      tone(speakerPin, 1109, 100);//C#
-      delay(80);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 2217, 100);//C#2
-      delay(100);
-    setColor(0, 0, 0);
-      */
-    
-      digitalWrite(chargePin, LOW);
       
-      //reading = 0;
-      //reading1 = 0;
-      //reading2 = 0;
       break;
     }
     case 4:
+    {
+      displayValues();
+      if (charged == false)
+      { 
+      setColor(255, 255, 255);  // white
+      digitalWrite(chargePin, HIGH);//charge on
+      delay(3000);
+      digitalWrite(chargePin, LOW);//charge off
+      charged = true;
+      setColor(255, 255, 255);  // white
+      tone(speakerPin, 2217, 100);//C#2
+      //setColor(0, 0, 0);
+      delay(100);
+      
+      //setColor(255, 255, 255);  // white
+      tone(speakerPin, 2217, 100);//C#2
+      //setColor(0, 0, 0);
+      delay(100);
+      
+      //setColor(255, 255, 255);  // white
+      tone(speakerPin, 1109, 100);//C#
+      //setColor(0, 0, 0);
+      delay(100);
+
+      //setColor(255, 255, 255);  // white
+      tone(speakerPin, 2217, 100);//C#2
+      setColor(0, 0, 0);
+      //delay(100);
+    
+      }
+    //flash RED every 10 seconds to indicate charge status
+    else if(count > 10)
+      {
+        setColor(255, 0, 0);
+        delay(400);
+        setColor(0, 0, 0);
+        count = 0;
+      }
+      count ++;
+      timer = 1;
+      break;
+    }
+    /*
     {
       //going away. signal move away
       
@@ -449,7 +489,7 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
       //reading1 = 0;
       //reading2 = 0;
       break;
-    }
+    }*/
     /*case 6:
     {
       //possible error. restart.
@@ -481,7 +521,7 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
       lcd.setCursor(0,0);
       lcd.print("ERROR: UNKNOWN");
       lcd.setCursor(0,1);
-      lcd.print("restarting...");
+      lcd.print("shutting down...");
       //sound chirp
       setColor(0, 0, 255);  // blue
       tone(speakerPin, 1380, 60);//A2
@@ -491,25 +531,39 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
       delay(60);
       setColor(255, 0, 0);  // red
       tone(speakerPin, 1380, 120);//A2 
-      delay(500);
+      delay(4000);
       //reading = 0;
-      digitalWrite(rstPin, LOW); 
+      digitalWrite(rstPin, HIGH); 
       //digitalWrite(rstPin, HIGH); 
-      delay(5); 
+      delay(500); 
       break;
     }
      //reading=0; 
   }//END OF SWITCH STATEMEMNT
   
   capStatus = 0;
-  timer--; //count tdown timer
+  
   //so by this point nothing out of the ordinary has happened.
-  if (timer <= 0){//signal there is NO CONTACT and timer is out. so, CHARGE UP! because the vessel is sitting idle.
+  /*if (timer <= 0){//signal there is NO CONTACT and timer is out. so, CHARGE UP! because the vessel is sitting idle.
+    
     if (charged == false){ 
       digitalWrite(chargePin, HIGH);//charge on
-      delay(1000);
+      delay(2000);
       digitalWrite(chargePin, LOW);//charge off
       charged = true;
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 1109, 100);//C#
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      delay(100);
+    setColor(0, 0, 0);
     }
     //flash RED every 10 seconds to indicate charge status
     if(count > 10)
@@ -525,9 +579,10 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
       {
         count ++;
       }
-    
-    timer = 0;        //NECESSARY??            
-  }
+      timer = 1;
+                      
+  }*/
+  timer--; //count tdown timer
 
     /* Don't forget to clear the flag. */
     f_wdt = 0;
