@@ -10,12 +10,13 @@
 #include <avr/wdt.h>
 #include <LiquidCrystal.h>
 
-#define filterSamples   5
+#define filterSamples   9 //taking 19 samples (odd numbers only)
 int sensSmoothArray1 [filterSamples];
 // initialize the library with the numbers of the interface pins
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
  //declare pin names
- /*const int chargePin = 12;
+ /*const int chargePin = 12; //this was LED pin assignments BEFORE capsense
  const int redPin = 11;
  const int greenPin = 10;
  const int bluePin = 9;
@@ -38,14 +39,23 @@ LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
  //const unsigned long maxTime = 15000; //the max number in sec*1k to wait BEFORE CHARGING
  //long reading = 0;
  //long total2 = 0;
- //int capStatus = 0;
+ int capStatus = 0;
  int count = 0;
+ int timer = 15; //THIS 
+ int filterCount = 0;
  int secondCount = 0;
  //int chirp = 0;
  int chirpCount = 0;
- long reading = 0;
-
+ long reading1 = 0;
+ long reading2 = 0;
+ long readingComb = 0;
+ int smoothedVal = 0;
+ int touchThreshold = 400;
+ int proximityDet = 220;
+ bool charged = false;
+ 
  CapacitiveSensor   cs_7_8 = CapacitiveSensor(7,8);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
+ CapacitiveSensor   cs_7_18 = CapacitiveSensor(7,18);          // >=10 megohm resistor between pins 7 & 8, pin 8 is sensor pin.
 
 /***************************************************
  *  Name:        ISR(WDT_vect)
@@ -58,7 +68,7 @@ LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
  *               is executed when watchdog timed out.
  *
  ***************************************************/
-ISR(WDT_vect)
+ISR(WDT_vect) //Interrupt Service Routine
 {
   if(f_wdt == 0)
   {
@@ -109,8 +119,22 @@ void enterSleep(void)
       analogWrite(bluePin, blue);  
     }
 
-
-
+ void displayValues()  //show values on LCD screen
+    {
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("A:");
+      lcd.print(reading1);
+      lcd.setCursor(8,0);
+      lcd.print("Av");
+      lcd.print(readingComb);
+      lcd.setCursor(0,1);
+      lcd.print("B:");
+      lcd.print(reading2);
+      lcd.setCursor(8,1);
+      lcd.print("Sm");
+      lcd.print(smoothedVal);
+    }
 /*int smooth(int data, float filterVal, float smoothedVal){
 
 
@@ -120,7 +144,7 @@ void enterSleep(void)
   else if (filterVal <= 0){
     filterVal = 0;
   }
-
+\\
   smoothedVal = (data * (1 - filterVal)) + (smoothedVal  *  filterVal);
 
   return (int)smoothedVal;
@@ -151,8 +175,18 @@ void setup() {
   
 
   //CONFIGURE CAPSENSE PARAMETERS
+  /*The baseline is value is re-calibrated at intervals 
+   * determined by CS_Autocal_Millis. 
+   * The default value is 200000 milliseconds (20 seconds). 
+   * This re-calibration may be turned off 
+   * by setting CS_Autocal_Millis to a high value 
+  with the set_CS_AutocaL_Millis() method. */
+  
   //cs_7_8.set_CS_AutocaL_Millis(0xFFFFFFFF);     // turn off autocalibrate on channel 1 - just as an example
-  cs_7_8.set_CS_Timeout_Millis(100);
+  //cs_7_8.set_CS_Timeout_Millis(40);
+  //cs_7_18.set_CS_Timeout_Millis(40);
+  cs_7_8.set_CS_AutocaL_Millis(80); 
+  cs_7_18.set_CS_AutocaL_Millis(80);
   
 
   /*** SETUP THE WDT ***/
@@ -171,7 +205,8 @@ void setup() {
   WDTCSR |= _BV(WDIE);
 
   //INDICATE INITIALIZATION SUCCESS
-  lcd.setCursor(0, 0);
+  lcd.clear();
+  //lcd.setCursor(0, 0);
   lcd.print("SCARAB v1.0");
   lcd.setCursor(0, 1);
   lcd.print("by Manuel Labor");
@@ -188,7 +223,6 @@ void setup() {
     tone(speakerPin, 4186, 125);
     delay(125);
     
-    
   }
   delay(500);
   lcd.clear();
@@ -200,209 +234,85 @@ void setup() {
   
 }
 
-void loop() {
-  // put your main code here, to run repeatedly:
-  
-  
+void loop() { // put your main code here, to run repeatedly:  
+  //cs_7_8.reset_CS_AutoCal(); //RECALIBRATE
+  //cs_7_18.reset_CS_AutoCal(); //RECALIBRATE  
     //
-if(f_wdt == 1){ //if awake:
+if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So do this:
   
   /* Don't forget to clear the flag. */
-  f_wdt = 0;
-  //long reading = 0;
-  int capStatus = 0;
-  //long start = millis();
-  reading =  cs_7_8.capacitiveSensor(30);
+  f_wdt = 0; //clear the watchdog timer flag. 
+  
+  //int capStatus = 0;
+  //long start = millis(); //used to display diag info
+  reading1 =  cs_7_8.capacitiveSensor(20); //get the reading from sensor 1
+  reading2 =  cs_7_18.capacitiveSensor(20); //get the reading from sensor 2
+  readingComb = ((reading1 + reading2) / 2); //get the average of both readings
   //float smoothedVal =  smooth(reading, .25, smoothedVal);   // second parameter determines smoothness  - 0 is off,  .9999 is max smooth 
-  int smoothedVal = digitalSmooth(reading, sensSmoothArray1);  // every sensor you use with digitalSmooth needs its own array
+  smoothedVal = digitalSmooth(readingComb, sensSmoothArray1);  // Run average through the smoothing algorithm. every sensor you use with digitalSmooth needs its own array.
 
-  Serial.print(reading);
+  /* for diagnostics
+  Serial.print(reading1);
   Serial.print("\tSmooth: ");
   Serial.println(smoothedVal);
-  /*if(reading == -2){
-    reading = 0;
-  }*/
-
-  if((reading == -2) || (reading >444)){//touch detected, sound alarm, taze cycle
-    capStatus = 1;  
-    //reading = 0;
-  }
-  else if(reading >= 244){//disturbance detected, charge, sound alarm
-    capStatus = 2;  
-    //reading = 0;
-  }
-  else if((reading > 30) && (smoothedVal < 100)){//imminent touch detected, charge, sound warning
-    capStatus = 3;  
-    //reading = 0;
-  }
-  else if((reading > 12) && (smoothedVal < 31)){//proximity detected, charge, chirp, blink temp
-    capStatus = 4;  
-    //reading = 0;
-  }
-  else if (reading < 11){//no proximity detected
-    capStatus = 5;
-    //reading = 0;
-  }
-  //else { //possible error. restart.
-  //  capStatus = 6;
-    //reading = 0;
-  //}
+  */
+  displayValues(); //display values on the LCD screen
 
   
+//THE FOLLOWING IS TO SECTION OUT THE READINGS.
+
+  if(readingComb > touchThreshold){//contact or contact imminent.
+    if (timer > 0){ //if within XX seconds of powerup AS DETERMINED BY INITIALIZATION OF VARIABLE (AT FIRST, THEN SEE BELOW)
+    timer = 30; //reset the timer
+    capStatus = 1; //signal: holding the vessel and the standby timer is running
+    //break; //leave this if loop
+    }
+    else{
+    capStatus = 2;  //unauthorized touch. signal alarm and taze cycle
+    }
+  }
+  else if((readingComb >=proximityDet) && (readingComb <=touchThreshold)){//disturbance detected, charge, sound alarm
+    if (timer > 0){ //if within 30 seconds of powerup
+      timer = 30; //reset the timer
+     capStatus = 1; //signal all is normal
+     //break; //leave this if loop
+    }
+    else{
+    capStatus = 3;  //signal warning and charge
+    }
+  }
+    //reading = 0;
+  
+  else if((readingComb - smoothedVal) <0){ //capacitance decreasing. walking away.
+    if (timer > 0){ //if within 30 seconds of powerup
+      //timer--; //count down the timer
+      capStatus = 1; //signal all is normal
+      //break; //leave this if loop
+    }
+    else{
+      capStatus = 4;
+    }  
+    //reading = 0;
+  }
+  
+   
+
+//NOW LET'S DO THINGS WITH THE READINGS:
+  /*********************************************
+  * STATUSES:
+  * 1 = all is normal
+  * 2 = unauthorized touch. signal alarm and taze cycle
+  * 3 = proximity detected. signal warning and charge
+  * 4 = going away. signal move away
+  **********************************************/
   switch (capStatus){
 
-    case 0:
+    case 0: //NOTHING HAPPENS HERE. NOTHING SHOULD HAPPEN HERE
     break;
     case 1:{
-      ////touch detected, sound alarm, taze cycle
-      
-      //charge
-      digitalWrite(chargePin, HIGH);
-      //diagnosis
-      lcd.clear();
-      lcd.setCursor(0,0);
-      lcd.print("TOUCH DETECTED");
-      lcd.setCursor(0,1);
-      lcd.print(reading);
-      lcd.print(" S: ");
-      lcd.print(smoothedVal);
-      //sound alarm
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 2637, 125);//e
-      delay(125);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 4186, 125);//c2
-      delay(125);
-      setColor(0, 0, 255);  // blue
-      tone(speakerPin, 2794, 125);//f
-      delay(125);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 5274, 125);//e2
-      delay(125);
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 4186, 125);//c2
-      delay(125);
-      digitalWrite(chargePin, LOW);
-      
-      reading = 0;
-      break;
-        //
-       
-    }
-    case 2:
-    {
-      //manipulation detected, charge, sound alarm
-      //charge
-      digitalWrite(chargePin, HIGH);
-      //diagnosis
-      lcd.clear();
-      lcd.setCursor(0,0);
-      lcd.print("DISTURBANCE DETECTED");
-      lcd.setCursor(0,1);
-      lcd.print(reading);
-      lcd.print(" S: ");
-      lcd.print(smoothedVal);
-      //sound alarm
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 2637, 125);//e
-      delay(125);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 4186, 125);//c2
-      delay(125);
-      setColor(0, 0, 255);  // blue
-      tone(speakerPin, 2794, 125);//f
-      delay(125);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 5274, 125);//e2
-      delay(125);
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 4186, 125);//c2
-      delay(125);
-      digitalWrite(chargePin, LOW);
-      lcd.clear();
-      //reading = 0;
-      break;      
-    }
-    case 3:
-    {
-      //imminent touch detected, charge, sound warning
-      //charge
-      digitalWrite(chargePin, HIGH);
-      lcd.clear();
-      //diagnosis
-      lcd.setCursor(0,0);
-      lcd.print("TOUCH IMMINENT");
-      lcd.setCursor(0,1);
-      lcd.print(reading);
-      lcd.print(" S: ");
-      lcd.print(smoothedVal);
-      //sound alarm
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 2217, 100);//C#2
-      delay(80);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 2217, 100);//C#2
-      delay(80);
-      setColor(0, 0, 255);  // blue
-      tone(speakerPin, 1109, 100);//C#
-      delay(80);
-      setColor(0, 255, 0);  // green
-      tone(speakerPin, 2217, 100);//C#2
-      //delay(100);
-      digitalWrite(chargePin, LOW);
-      
-      //reading = 0;
-      break;
-    }
-    case 4:
-    {
-      //proximity detected, charge, chirp, blink temp
-      //charge
-      digitalWrite(chargePin, HIGH);
-      lcd.clear();
-      //diagnosis
-      lcd.setCursor(0,0);
-      lcd.print("PROXIMITY DETECTED");
-      lcd.setCursor(0,1);
-      lcd.print(reading);
-      lcd.print(" S: ");
-      lcd.print(smoothedVal);
-      //sound chirp
-      setColor(255, 0, 0);  // red
-      tone(speakerPin, 3520, 60);//A2
-      delay(40);
-      setColor(100, 0, 255);  // orange
-      tone(speakerPin, 1760, 60);//A2
-      delay(200);
-      setColor(0, 0, 0);  //
-      delay(100);
-      setColor(255, 0, 0);
-      delay(500);
-      setColor(0, 0, 0);  //
-      delay(100);
-      setColor(255, 0, 0);
-      delay(500);
-      setColor(0, 0, 0);
-      digitalWrite(chargePin, LOW);
-      
-      //chirp = 1;
-      //reading = 0;
-      break;
-    }
-    case 5:
-    {
-      //no proximity detected
-      //count++
-      lcd.clear();
-      lcd.setCursor(0,0);
-      lcd.print("SYSTEM ACTIVE");
-      lcd.setCursor(0,1);
-      //lcd.print("scan: ");
-      lcd.setCursor(0,1);
-      lcd.print(reading);
-      lcd.print(" S: ");
-      lcd.print(smoothedVal);
-      if(count > 10)
+      //holding the vessel and the standby timer is running. flash green every 10 seconds
+    //count++;
+    if(count > 10)
       {
                 
         setColor(0, 255, 0);
@@ -415,9 +325,129 @@ if(f_wdt == 1){ //if awake:
       {
         count ++;
       }
+           
       
-      //lcd.clear();
+      
+      //digitalWrite(chargePin, LOW);
+      
+      break;
+        //
+       
+    }
+    case 2: //unauthorized touch. signal alarm and taze cycle
+    {
+      //charge
+      digitalWrite(chargePin, HIGH);
+      
+      //sound alarm
+    for(int i = 0; i < 4; i++)
+    {
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2637, 125);//e
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 2794, 125);//f
+      delay(125);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 5274, 125);//e2
+      delay(125);
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 4186, 125);//c2
+      delay(125);
+      digitalWrite(chargePin, LOW);
+      lcd.clear();
+    }
+      digitalWrite(chargePin, LOW);
+      //reading1 = 0;
+      //reading2 = 0;
+      break;      
+    }
+    case 3: //proximity detected. signal warning and charge
+    {
+      
+    //charge
+      digitalWrite(chargePin, HIGH);
+      
+      //sound chirp
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 3520, 60);//A2
+      delay(40);
+      setColor(100, 0, 255);  // orange
+      tone(speakerPin, 1760, 60);//A2
+      delay(200);
+      
+    /*
+    //sound warning
+      setColor(255, 0, 0);  // red
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      delay(80);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 1109, 100);//C#
+      delay(80);
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 2217, 100);//C#2
+      delay(100);
+    setColor(0, 0, 0);
+      */
+    
+      digitalWrite(chargePin, LOW);
+      
       //reading = 0;
+      //reading1 = 0;
+      //reading2 = 0;
+      break;
+    }
+    case 4:
+    {
+      //going away. signal move away
+      
+     
+      //sound chirp
+      setColor(0, 255, 0);  // green
+      tone(speakerPin, 1760, 60);//A2
+      delay(200);
+      setColor(0, 0, 255);  // blue
+      tone(speakerPin, 3520, 60);//A2
+      delay(40);
+      setColor(0, 0, 0);  //
+      //digitalWrite(chargePin, LOW);
+      
+      //chirp = 1;
+      //reading = 0;
+      //reading1 = 0;
+      //reading2 = 0;
+      break;
+    }
+    case 5:
+    {
+      //all is normal but timer is out. CHARGE and flash red every 10 seconds.
+    count++;
+    if(count > 10)
+      {
+        digitalWrite(chargePin, HIGH);//charge  
+    //flash RED
+        setColor(255, 0, 0);
+        delay(500);
+        setColor(0, 0, 0);
+        
+    count = 0; //reset count
+        
+      }
+      else
+      {
+        count ++;
+      }
+      
+      digitalWrite(chargePin, LOW);
+      
+      //reading1 = 0;
+      //reading2 = 0;
       break;
     }
     /*case 6:
@@ -469,63 +499,44 @@ if(f_wdt == 1){ //if awake:
       break;
     }
      //reading=0; 
-  }
+  }//END OF SWITCH STATEMEMNT
+  
   capStatus = 0;
-//while the vessel detects proximity, go to sleep and check every .xxx seconds
-    //while((cs_7_8.capacitiveSensor(30) > 600) || (cs_7_8.capacitiveSensor(30) < 0)){
-    //while((reading > 300) || (reading < 0)){
-    /* Don't forget to clear the flag. */
-    //f_wdt = 0;//NECESSARY?
-     
-    
-    /*total2 = cs_7_8.capacitiveSensor(30);
-    if(total2 == -2){//TOUCH??
-    total2 = 1;
-    lcd.setCursor(0,1);
-    lcd.print("TOUCH?");
+  timer--; //count tdown timer
+  //so by this point nothing out of the ordinary has happened.
+  if (timer <= 0){//signal there is NO CONTACT and timer is out. so, CHARGE UP! because the vessel is sitting idle.
+    if (charged == false){ 
+      digitalWrite(chargePin, HIGH);//charge on
+      delay(1000);
+      digitalWrite(chargePin, LOW);//charge off
+      charged = true;
     }
-    lcd.setCursor(0,0);
-    lcd.print(total2);
-    Serial.print("PROXIMITY DETECTED: ");
-    Serial.print(total2);
-    Serial.print("   \t");
-    Serial.print("AVERAGE: ");
-    Serial.println((total2 + cs_7_8.capacitiveSensor(30)) / 2);
-
-    setColor(0, 0, 255); //blue
-    delay(50);
-    setColor(0, 0, 0);
-    lcd.clear();
-    /* Don't forget to clear the flag. */
-    //f_wdt = 0;
-    /* Re-enter sleep mode. */
-    //enterSleep();
+    //flash RED every 10 seconds to indicate charge status
+    if(count > 10)
+      {
+                
+        setColor(255, 0, 0);
+        delay(400);
+        setColor(0, 0, 0);
+        count = 0;
+        
+      }
+      else
+      {
+        count ++;
+      }
     
-   //} //END OF WHILE LOOP*/
-   //BELOW IS WHAT TO DO WHEN PROX NOT DETECTED
-    //total2 =  cs_7_8.capacitiveSensor(30);
-    //lcd.clear();
-    //lcd.print(cs_7_8.capacitiveSensor(30));
-    //lcd.setCursor(0,1);
-    //lcd.print(millis() - start);
-    //Serial.print(millis() - start);        // check on performance in milliseconds
-    //Serial.print("\tRAW: ");
-    //Serial.print(reading);
-    //Serial.print("   \tAVG: ");                    // tab character for debug window spacing
-    //Serial.println( (reading / total2) / 2 );                  // print sensor output 1
-    //delay(10);
+    timer = 0;        //NECESSARY??            
+  }
+
     /* Don't forget to clear the flag. */
     f_wdt = 0;
-  //here the vessel is NOT being held, start counting, then arm system.
-  //flash red
-    //setColor(255, 0, 0);
-    //delay(50);
-    //setColor(0, 0, 0);
-    //NEED TO START COUNTING SOMEWHERE HERE
+
     /* Re-enter sleep mode. */
-    enterSleep();    
     
-  }// END OF "IF AWAKE" LOOP
+    enterSleep();    
+
+}// END OF "IF AWAKE" LOOP
   
   else //IF NOT AWAKE --DO NOT USE
   {
@@ -592,3 +603,4 @@ int digitalSmooth(int rawIn, int *sensSmoothArray){     // "int *sensSmoothArray
 //  Serial.println(total/k);
   return total / k;    // divide by number of samples
 }
+
