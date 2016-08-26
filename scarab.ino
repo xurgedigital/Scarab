@@ -417,9 +417,9 @@ if(f_wdt == 1){ //THINGS TO DO IF AWAKE, WHICH IT IS WHENEVER IT IS, get it? So 
             
       break;
     }
-    case 4:
+    case 4: //TIMEOUT REACHED
     {
-      displayValues();
+      //displayValues();
       if (charged == false)
       { 
       //setColor(255, 255, 255);  // white
